@@ -45,7 +45,10 @@ const App = () => {
       "float32",
       new Float32Array([...output0.data.slice(0, 4), ...output0.data.slice(85, 117)])
     );
-    const maskConfig = new Tensor("float32", new Float32Array([140, 255, 255, 255, 255]));
+    const maskConfig = new Tensor(
+      "float32",
+      new Float32Array([640, output0.data[3], output0.data[2], 255, 255, 255, 255])
+    );
     await mask.run({ detection: maskInput, mask: output1, config: maskConfig });
 
     setSession({ net: yolov5, nms: nms, mask: mask });
@@ -56,9 +59,9 @@ const App = () => {
     <div className="App">
       {loading && <Loader>{loading}</Loader>}
       <div className="header">
-        <h1>YOLOv5 Object Detection App</h1>
+        <h1>YOLOv5 Object Segmentation App</h1>
         <p>
-          YOLOv5 object detection application live on browser powered by{" "}
+          YOLOv5 object segmentation application live on browser powered by{" "}
           <code>onnxruntime-web</code>
         </p>
         <p>

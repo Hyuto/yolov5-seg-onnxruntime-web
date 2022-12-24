@@ -1,7 +1,16 @@
 import cv from "@techstark/opencv-js";
 import { Tensor } from "onnxruntime-web";
-import { renderBoxes } from "./renderBox";
+import { renderBoxes, Colors } from "./renderBox";
 
+const colors = new Colors();
+
+/**
+ * Get divisible image size by stride
+ * @param {Number} stride
+ * @param {Number} width
+ * @param {Number} height
+ * @returns {Array[Number]} image size [w, h]
+ */
 const divStride = (stride, width, height) => {
   if (width % stride !== 0) {
     if (width % stride >= stride / 2) width = (Math.floor(width / stride) + 1) * stride;
@@ -14,6 +23,14 @@ const divStride = (stride, width, height) => {
   return [width, height];
 };
 
+/**
+ * Preprocessing image
+ * @param {HTMLImageElement} source image source
+ * @param {Number} modelWidth model input width
+ * @param {Number} modelHeight model input height
+ * @param {Number} stride model stride
+ * @return preprocessed image and configs
+ */
 const preprocessing = (source, modelWidth, modelHeight, stride = 32) => {
   const mat = cv.imread(source); // read from img tag
   const matC3 = new cv.Mat(mat.rows, mat.cols, cv.CV_8UC3); // new image matrix
@@ -45,7 +62,7 @@ const preprocessing = (source, modelWidth, modelHeight, stride = 32) => {
   matC3.delete();
   matPad.delete();
 
-  return [input, xRatio, yRatio, maxSize];
+  return [input, xRatio, yRatio];
 };
 
 /**
@@ -69,9 +86,11 @@ export const detectImage = async (
   classThreshold,
   inputShape
 ) => {
-  const [modelWidth, modelHeight] = inputShape.slice(2);
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height); // clean canvas
 
-  const [input, xRatio, yRatio, maxSize] = preprocessing(image, modelWidth, modelHeight);
+  const [modelWidth, modelHeight] = inputShape.slice(2);
+  const [input, xRatio, yRatio] = preprocessing(image, modelWidth, modelHeight);
 
   const tensor = new Tensor("float32", input.data32F, inputShape); // to ort.Tensor
   const config = new Tensor("float32", new Float32Array([topk, iouThreshold, confThreshold])); // nms config tensor
@@ -85,40 +104,65 @@ export const detectImage = async (
     if (!selected_idx.data.includes(idx)) continue; // skip if index isn't selected
 
     const data = output0.data.slice(idx * output0.dims[2], (idx + 1) * output0.dims[2]); // get rows
-    let [x, y, w, h] = data.slice(0, 4);
+    const box = data.slice(0, 4);
     const confidence = data[4]; // detection confidence
     const scores = data.slice(5, 85); // classes probability scores
     let score = Math.max(...scores); // maximum probability scores
     const label = scores.indexOf(score); // class id of maximum probability scores
     score *= confidence; // multiply score by conf
+    const color = colors.get(label);
 
     // filtering by score thresholds
     if (score >= classThreshold) {
-      x = Math.floor((x - 0.5 * w) * xRatio); // left
-      y = Math.floor((y - 0.5 * h) * yRatio); //top
-      w = Math.floor(w * xRatio); // width
-      h = Math.floor(h * yRatio); // height
+      const x = Math.floor((box[0] - 0.5 * box[2]) * xRatio); // left
+      const y = Math.floor((box[1] - 0.5 * box[3]) * yRatio); //top
+      const w = Math.floor(box[2] * xRatio); // width
+      const h = Math.floor(box[3] * yRatio); // height
 
       boxes.push({
         label: label,
         probability: score,
-        bounding: [x, y, w, h],
+        color: color,
+        bounding: [x, y, w, h], //upscale box
       });
 
-      console.log([x, y, w, h, maxSize]);
-
-      const mask = new Tensor("float32", new Float32Array([x, y, w, h, ...data.slice(85)]));
-      const maskConfig = new Tensor("float32", new Float32Array([640, 255, 255, 255, 150]));
-      const masked = await session.mask.run({
+      const mask = new Tensor(
+        "float32",
+        new Float32Array([
+          box[0] - 0.5 * box[2], //x
+          box[1] - 0.5 * box[3], //y
+          box[2], //w
+          box[3], //h
+          ...data.slice(85), //mask data
+        ])
+      );
+      const maskConfig = new Tensor(
+        "float32",
+        new Float32Array([
+          Math.max(modelWidth, modelHeight), // maxSize
+          h, // target mask height
+          w, // target mask width
+          ...Colors.hexToRgba(color, 150), // color in RGBA
+        ])
+      );
+      const { mask_filter } = await session.mask.run({
         detection: mask,
         mask: output1,
         config: maskConfig,
-      });
-      console.log(masked);
+      }); // get mask
+
+      const mask_img = new ImageData(
+        new Uint8ClampedArray(mask_filter.data),
+        mask_filter.dims[1],
+        mask_filter.dims[0]
+      ); // create image data from mask output
+
+      // TODO: Fixing not drawed overlaped imagedata
+      ctx.putImageData(mask_img, x, y); // put ImageData
     }
   }
 
-  renderBoxes(canvas, boxes); // Draw boxes
+  renderBoxes(ctx, boxes); // Draw boxes
 
   input.delete();
 };
