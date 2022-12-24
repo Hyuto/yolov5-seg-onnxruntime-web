@@ -17,8 +17,8 @@ Serving YOLOv5 segmentation in browser using onnxruntime-web with `wasm` backend
 ## Setup
 
 ```bash
-git clone https://github.com/Hyuto/yolov5-seg-onnxrumtime-web.git
-cd yolov5-seg-onnxrumtime-web
+git clone https://github.com/Hyuto/yolov5-seg-onnxruntime-web.git
+cd yolov5-seg-onnxruntime-web
 yarn install # Install dependencies
 ```
 

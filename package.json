@@ -1,5 +1,6 @@
 {
-  "name": "yolov5-seg-onnxrumtime-web",
+  "name": "yolov5-seg-onnxruntime-web",
+  "homepage": "https://hyuto.github.io/yolov5-seg-onnxruntime-web/",
   "version": "0.1.0",
   "dependencies": {
     "@techstark/opencv-js": "4.5.5-release.2",
@@ -10,7 +11,8 @@
   },
   "scripts": {
     "start": "craco start",
-    "build": "craco build"
+    "build": "craco build",
+    "deploy": "gh-pages -d build"
   },
   "eslintConfig": {
     "extends": [
@@ -44,6 +46,7 @@
   },
   "devDependencies": {
     "@craco/craco": "^7.0.0",
-    "copy-webpack-plugin": "^11.0.0"
+    "copy-webpack-plugin": "^11.0.0",
+    "gh-pages": "^4.0.0"
   }
 }
