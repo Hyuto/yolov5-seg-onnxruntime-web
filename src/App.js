@@ -31,25 +31,14 @@ const App = () => {
       InferenceSession.create(`${process.env.PUBLIC_URL}/model/mask-yolov5-seg.onnx`),
     ]);
 
-    // warmup model
+    // warmup main model
     setLoading("Warming up model...");
     const tensor = new Tensor(
       "float32",
       new Float32Array(modelInputShape.reduce((a, b) => a * b)),
       modelInputShape
     );
-    const nmsConfig = new Tensor("float32", new Float32Array([topk, iouThreshold, confThreshold]));
-    const { output0, output1 } = await yolov5.run({ images: tensor });
-    await nms.run({ detection: output0, config: nmsConfig });
-    const maskInput = new Tensor(
-      "float32",
-      new Float32Array([...output0.data.slice(0, 4), ...output0.data.slice(85, 117)])
-    );
-    const maskConfig = new Tensor(
-      "float32",
-      new Float32Array([640, output0.data[3], output0.data[2], 255, 255, 255, 255])
-    );
-    await mask.run({ detection: maskInput, mask: output1, config: maskConfig });
+    await yolov5.run({ images: tensor });
 
     setSession({ net: yolov5, nms: nms, mask: mask });
     setLoading(null);

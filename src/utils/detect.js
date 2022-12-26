@@ -98,6 +98,7 @@ export const detectImage = async (
   const { selected_idx } = await session.nms.run({ detection: output0, config: config }); // get selected idx from nms
 
   const boxes = [];
+  const overlay = cv.Mat.zeros(modelHeight, modelWidth, cv.CV_8UC4);
 
   // looping through output
   for (let idx = 0; idx < output0.dims[1]; idx++) {
@@ -110,7 +111,7 @@ export const detectImage = async (
     let score = Math.max(...scores); // maximum probability scores
     const label = scores.indexOf(score); // class id of maximum probability scores
     score *= confidence; // multiply score by conf
-    const color = colors.get(label);
+    const color = colors.get(label); // get color
 
     // filtering by score thresholds
     if (score >= classThreshold) {
@@ -123,46 +124,53 @@ export const detectImage = async (
         label: label,
         probability: score,
         color: color,
-        bounding: [x, y, w, h], //upscale box
-      });
+        bounding: [x, y, w, h], // upscale box
+      }); // update boxes to draw later
 
       const mask = new Tensor(
         "float32",
         new Float32Array([
-          box[0] - 0.5 * box[2], //x
-          box[1] - 0.5 * box[3], //y
-          box[2], //w
-          box[3], //h
-          ...data.slice(85), //mask data
+          box[0] - 0.5 * box[2], // before upscale x
+          box[1] - 0.5 * box[3], // before upscale y
+          box[2], // before upscale w
+          box[3], // before upscale h
+          ...data.slice(85), // mask data
         ])
-      );
+      ); // mask input
       const maskConfig = new Tensor(
         "float32",
         new Float32Array([
           Math.max(modelWidth, modelHeight), // maxSize
-          h, // target mask height
-          w, // target mask width
-          ...Colors.hexToRgba(color, 150), // color in RGBA
+          x, // upscale x
+          y, // upscale y
+          w, // upscale width
+          h, // upscale height
+          ...Colors.hexToRgba(color, 120), // color in RGBA
         ])
-      );
+      ); // mask config
       const { mask_filter } = await session.mask.run({
         detection: mask,
         mask: output1,
         config: maskConfig,
       }); // get mask
 
-      const mask_img = new ImageData(
-        new Uint8ClampedArray(mask_filter.data),
+      const mask_mat = cv.matFromArray(
+        mask_filter.dims[0],
         mask_filter.dims[1],
-        mask_filter.dims[0]
-      ); // create image data from mask output
+        cv.CV_8UC4,
+        mask_filter.data
+      ); // mask result to Mat
 
-      // TODO: Fixing not drawed overlaped imagedata
-      ctx.putImageData(mask_img, x, y); // put ImageData
+      cv.addWeighted(overlay, 1, mask_mat, 1, 0, overlay); // Update mask overlay
+      mask_mat.delete(); // delete unused Mat
     }
   }
 
+  const mask_img = new ImageData(new Uint8ClampedArray(overlay.data), overlay.cols, overlay.rows); // create image data from mask overlay
+  ctx.putImageData(mask_img, 0, 0); // put ImageData data to canvas
+
   renderBoxes(ctx, boxes); // Draw boxes
 
-  input.delete();
+  input.delete(); // delete unused Mat
+  overlay.delete(); // delete unused Mat
 };
