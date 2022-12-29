@@ -5,11 +5,134 @@ import { renderBoxes, Colors } from "./renderBox";
 const colors = new Colors();
 
 /**
+ * Detect Image
+ * @param {HTMLImageElement} image Image to detect
+ * @param {HTMLCanvasElement} canvas canvas to draw boxes
+ * @param {ort.InferenceSession} session YOLOv5 onnxruntime session
+ * @param {Number} topk Integer representing the maximum number of boxes to be selected per class
+ * @param {Number} iouThreshold Float representing the threshold for deciding whether boxes overlap too much with respect to IOU
+ * @param {Number} confThreshold Float representing the threshold for deciding when to remove boxes based on confidence score
+ * @param {Number} classThreshold class threshold
+ * @param {Number[]} inputShape model input shape. Normally in YOLO model [batch, channels, width, height]
+ */
+export const detectImage = async (
+  image,
+  canvas,
+  session,
+  topk,
+  iouThreshold,
+  confThreshold,
+  classThreshold,
+  inputShape
+) => {
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height); // clean canvas
+
+  const [modelWidth, modelHeight] = inputShape.slice(2);
+  const maxSize = Math.max(modelWidth, modelHeight);
+  const [input, xRatio, yRatio] = preprocessing(image, modelWidth, modelHeight);
+
+  const tensor = new Tensor("float32", input.data32F, inputShape); // to ort.Tensor
+  const config = new Tensor("float32", new Float32Array([topk, iouThreshold, confThreshold])); // nms config tensor
+  const { output0, output1 } = await session.net.run({ images: tensor }); // run session and get output layer
+  const { selected_idx } = await session.nms.run({ detection: output0, config: config }); // get selected idx from nms
+
+  const boxes = [];
+  const overlay = cv.Mat.zeros(modelHeight, modelWidth, cv.CV_8UC4);
+
+  // looping through output
+  for (let idx = 0; idx < output0.dims[1]; idx++) {
+    if (!selected_idx.data.includes(idx)) continue; // skip if index isn't selected
+
+    const data = output0.data.slice(idx * output0.dims[2], (idx + 1) * output0.dims[2]); // get rows
+    let box = data.slice(0, 4);
+    const confidence = data[4]; // detection confidence
+    const scores = data.slice(5, 85); // classes probability scores
+    let score = Math.max(...scores); // maximum probability scores
+    const label = scores.indexOf(score); // class id of maximum probability scores
+    score *= confidence; // multiply score by conf
+    const color = colors.get(label); // get color
+
+    // filtering by score thresholds
+    if (score >= classThreshold) {
+      box = overflowBoxes(
+        [
+          box[0] - 0.5 * box[2], // before upscale x
+          box[1] - 0.5 * box[3], // before upscale y
+          box[2], // before upscale w
+          box[3], // before upscale h
+        ],
+        maxSize
+      ); // keep boxes in maxSize range
+
+      const [x, y, w, h] = overflowBoxes(
+        [
+          Math.floor(box[0] * xRatio), // upscale left
+          Math.floor(box[1] * yRatio), // upscale top
+          Math.floor(box[2] * xRatio), // upscale width
+          Math.floor(box[3] * yRatio), // upscale height
+        ],
+        maxSize
+      ); // keep boxes in maxSize range
+
+      boxes.push({
+        label: label,
+        probability: score,
+        color: color,
+        bounding: [x, y, w, h], // upscale box
+      }); // update boxes to draw later
+
+      const mask = new Tensor(
+        "float32",
+        new Float32Array([
+          ...box, // original scale box
+          ...data.slice(85), // mask data
+        ])
+      ); // mask input
+      const maskConfig = new Tensor(
+        "float32",
+        new Float32Array([
+          maxSize,
+          x, // upscale x
+          y, // upscale y
+          w, // upscale width
+          h, // upscale height
+          ...Colors.hexToRgba(color, 120), // color in RGBA
+        ])
+      ); // mask config
+      const { mask_filter } = await session.mask.run({
+        detection: mask,
+        mask: output1,
+        config: maskConfig,
+      }); // get mask
+
+      const mask_mat = cv.matFromArray(
+        mask_filter.dims[0],
+        mask_filter.dims[1],
+        cv.CV_8UC4,
+        mask_filter.data
+      ); // mask result to Mat
+
+      cv.addWeighted(overlay, 1, mask_mat, 1, 0, overlay); // Update mask overlay
+      mask_mat.delete(); // delete unused Mat
+    }
+  }
+
+  const mask_img = new ImageData(new Uint8ClampedArray(overlay.data), overlay.cols, overlay.rows); // create image data from mask overlay
+  ctx.putImageData(mask_img, 0, 0); // put ImageData data to canvas
+
+  renderBoxes(ctx, boxes); // Draw boxes
+
+  input.delete(); // delete unused Mat
+  overlay.delete(); // delete unused Mat
+};
+
+/**
  * Get divisible image size by stride
  * @param {Number} stride
  * @param {Number} width
  * @param {Number} height
- * @returns {Array[Number]} image size [w, h]
+ * @returns {Number[2]} image size [w, h]
  */
 const divStride = (stride, width, height) => {
   if (width % stride !== 0) {
@@ -66,111 +189,15 @@ const preprocessing = (source, modelWidth, modelHeight, stride = 32) => {
 };
 
 /**
- * Detect Image
- * @param {HTMLImageElement} image Image to detect
- * @param {HTMLCanvasElement} canvas canvas to draw boxes
- * @param {ort.InferenceSession} session YOLOv5 onnxruntime session
- * @param {Number} topk Integer representing the maximum number of boxes to be selected per class
- * @param {Number} iouThreshold Float representing the threshold for deciding whether boxes overlap too much with respect to IOU
- * @param {Number} confThreshold Float representing the threshold for deciding when to remove boxes based on confidence score
- * @param {Number} classThreshold class threshold
- * @param {Number[]} inputShape model input shape. Normally in YOLO model [batch, channels, width, height]
+ * Handle overflow boxes based on maxSize
+ * @param {Number[4]} box box in [x, y, w, h] format
+ * @param {Number} maxSize
+ * @returns non overflow boxes
  */
-export const detectImage = async (
-  image,
-  canvas,
-  session,
-  topk,
-  iouThreshold,
-  confThreshold,
-  classThreshold,
-  inputShape
-) => {
-  const ctx = canvas.getContext("2d");
-  ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height); // clean canvas
-
-  const [modelWidth, modelHeight] = inputShape.slice(2);
-  const [input, xRatio, yRatio] = preprocessing(image, modelWidth, modelHeight);
-
-  const tensor = new Tensor("float32", input.data32F, inputShape); // to ort.Tensor
-  const config = new Tensor("float32", new Float32Array([topk, iouThreshold, confThreshold])); // nms config tensor
-  const { output0, output1 } = await session.net.run({ images: tensor }); // run session and get output layer
-  const { selected_idx } = await session.nms.run({ detection: output0, config: config }); // get selected idx from nms
-
-  const boxes = [];
-  const overlay = cv.Mat.zeros(modelHeight, modelWidth, cv.CV_8UC4);
-
-  // looping through output
-  for (let idx = 0; idx < output0.dims[1]; idx++) {
-    if (!selected_idx.data.includes(idx)) continue; // skip if index isn't selected
-
-    const data = output0.data.slice(idx * output0.dims[2], (idx + 1) * output0.dims[2]); // get rows
-    const box = data.slice(0, 4);
-    const confidence = data[4]; // detection confidence
-    const scores = data.slice(5, 85); // classes probability scores
-    let score = Math.max(...scores); // maximum probability scores
-    const label = scores.indexOf(score); // class id of maximum probability scores
-    score *= confidence; // multiply score by conf
-    const color = colors.get(label); // get color
-
-    // filtering by score thresholds
-    if (score >= classThreshold) {
-      const x = Math.floor((box[0] - 0.5 * box[2]) * xRatio); // left
-      const y = Math.floor((box[1] - 0.5 * box[3]) * yRatio); //top
-      const w = Math.floor(box[2] * xRatio); // width
-      const h = Math.floor(box[3] * yRatio); // height
-
-      boxes.push({
-        label: label,
-        probability: score,
-        color: color,
-        bounding: [x, y, w, h], // upscale box
-      }); // update boxes to draw later
-
-      const mask = new Tensor(
-        "float32",
-        new Float32Array([
-          box[0] - 0.5 * box[2], // before upscale x
-          box[1] - 0.5 * box[3], // before upscale y
-          box[2], // before upscale w
-          box[3], // before upscale h
-          ...data.slice(85), // mask data
-        ])
-      ); // mask input
-      const maskConfig = new Tensor(
-        "float32",
-        new Float32Array([
-          Math.max(modelWidth, modelHeight), // maxSize
-          x, // upscale x
-          y, // upscale y
-          w, // upscale width
-          h, // upscale height
-          ...Colors.hexToRgba(color, 120), // color in RGBA
-        ])
-      ); // mask config
-      const { mask_filter } = await session.mask.run({
-        detection: mask,
-        mask: output1,
-        config: maskConfig,
-      }); // get mask
-
-      const mask_mat = cv.matFromArray(
-        mask_filter.dims[0],
-        mask_filter.dims[1],
-        cv.CV_8UC4,
-        mask_filter.data
-      ); // mask result to Mat
-
-      cv.addWeighted(overlay, 1, mask_mat, 1, 0, overlay); // Update mask overlay
-      mask_mat.delete(); // delete unused Mat
-    }
-  }
-
-  const mask_img = new ImageData(new Uint8ClampedArray(overlay.data), overlay.cols, overlay.rows); // create image data from mask overlay
-  ctx.putImageData(mask_img, 0, 0); // put ImageData data to canvas
-
-  renderBoxes(ctx, boxes); // Draw boxes
-
-  input.delete(); // delete unused Mat
-  overlay.delete(); // delete unused Mat
+const overflowBoxes = (box, maxSize) => {
+  box[0] = box[0] >= 0 ? box[0] : 0;
+  box[1] = box[1] >= 0 ? box[1] : 0;
+  box[2] = box[0] + box[2] <= maxSize ? box[2] : maxSize - box[0];
+  box[3] = box[1] + box[3] <= maxSize ? box[3] : maxSize - box[1];
+  return box;
 };
