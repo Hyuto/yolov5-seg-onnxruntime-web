@@ -93,6 +93,10 @@ Use another YOLOv5 model.
    ```
 5. Done! 😊
 
+**Note : Custom Trained Model**
+
+For custom trained YOLOv5 Segmentation model please update `labels.json`
+
 ## Reference
 
 - https://github.com/ultralytics/yolov5

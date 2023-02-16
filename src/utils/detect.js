@@ -1,8 +1,10 @@
 import cv from "@techstark/opencv-js";
 import { Tensor } from "onnxruntime-web";
 import { renderBoxes, Colors } from "./renderBox";
+import labels from "./labels.json";
 
 const colors = new Colors();
+const numClass = labels.length;
 
 /**
  * Detect Image
@@ -47,7 +49,7 @@ export const detectImage = async (
     const data = output0.data.slice(idx * output0.dims[2], (idx + 1) * output0.dims[2]); // get rows
     let box = data.slice(0, 4);
     const confidence = data[4]; // detection confidence
-    const scores = data.slice(5, 85); // classes probability scores
+    const scores = data.slice(5, 5 + numClass); // classes probability scores
     let score = Math.max(...scores); // maximum probability scores
     const label = scores.indexOf(score); // class id of maximum probability scores
     score *= confidence; // multiply score by conf
@@ -76,7 +78,7 @@ export const detectImage = async (
       ); // keep boxes in maxSize range
 
       boxes.push({
-        label: label,
+        label: labels[label],
         probability: score,
         color: color,
         bounding: [x, y, w, h], // upscale box
@@ -86,7 +88,7 @@ export const detectImage = async (
         "float32",
         new Float32Array([
           ...box, // original scale box
-          ...data.slice(85), // mask data
+          ...data.slice(5 + numClass), // mask data
         ])
       ); // mask input
       const maskConfig = new Tensor(
